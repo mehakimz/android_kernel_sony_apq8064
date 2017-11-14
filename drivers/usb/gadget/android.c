@@ -25,6 +25,7 @@
 #include <linux/utsname.h>
 #include <linux/platform_device.h>
 #include <linux/pm_qos.h>
+#include <linux/of.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/composite.h>
@@ -76,6 +77,9 @@
 #include "f_ccid.c"
 #include "f_mtp.c"
 #include "f_accessory.c"
+#include "f_hid.h"
+#include "f_hid_android_keyboard.c"
+#include "f_hid_android_mouse.c"
 #ifdef CONFIG_USB_ANDROID_CDC_ECM
 #include "f_ecm.c"
 #else
@@ -105,6 +109,8 @@ MODULE_AUTHOR("Mike Lockwood");
 MODULE_DESCRIPTION("Android Composite USB Driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("1.0");
+
+static DEFINE_MUTEX(function_bind_sem);
 
 static const char longname[] = "Gadget Android";
 
@@ -2340,10 +2346,46 @@ static struct android_usb_function midi_function = {
 	.attributes	= midi_function_attributes,
 };
 
+static int hid_function_init(struct android_usb_function *f, struct usb_composite_dev *cdev)
+{
+	return ghid_setup(cdev->gadget, 2);
+}
+
+static void hid_function_cleanup(struct android_usb_function *f)
+{
+	ghid_cleanup();
+}
+
+static int hid_function_bind_config(struct android_usb_function *f, struct usb_configuration *c)
+{
+	int ret;
+	printk(KERN_INFO "hid keyboard\n");
+	ret = hidg_bind_config(c, &ghid_device_android_keyboard, 0);
+	if (ret) {
+		pr_info("%s: hid_function_bind_config keyboard failed: %d\n", __func__, ret);
+		return ret;
+	}
+	printk(KERN_INFO "hid mouse\n");
+	ret = hidg_bind_config(c, &ghid_device_android_mouse, 1);
+	if (ret) {
+		pr_info("%s: hid_function_bind_config mouse failed: %d\n", __func__, ret);
+		return ret;
+	}
+	return 0;
+}
+
+static struct android_usb_function hid_function = {
+	.name		= "hid",
+	.init		= hid_function_init,
+	.cleanup	= hid_function_cleanup,
+	.bind_config	= hid_function_bind_config,
+};
+
 static struct android_usb_function *supported_functions[] = {
 #ifdef CONFIG_USB_ANDROID_MBIM
 	&mbim_function,
 #endif
+	&hid_function,
 	&ecm_qc_function,
 	&rmnet_smd_function,
 	&rmnet_sdio_function,
@@ -2677,6 +2719,8 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 				pr_err("android_usb: Cannot enable '%s' (%d)",
 								   name, err);
 		}
+/* HID driver always enabled, it's the whole point of this kernel patch */
+	android_enable_function(dev, conf, "hid");
 	}
 
 	/* Free uneeded configurations if exists */
